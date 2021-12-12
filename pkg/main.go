@@ -33,15 +33,15 @@ import (
 )
 
 func main() {
-	config, privateKey := initConfig()
+	config, githubPrivateKey, clientPrivateKey := initConfig()
 	logger := initLogger(config)
 
 	logger.Debug("Creating GitHub application transports")
-	itrForClient, err := ghinstallation.NewAppsTransport(http.DefaultTransport, config.Apps.GitHub.AppID, privateKey)
+	itrForClient, err := ghinstallation.NewAppsTransport(http.DefaultTransport, config.Apps.Client.AppID, clientPrivateKey)
 	if err != nil {
 		logger.Fatalf("Failed creating app authentication: %v", err)
 	}
-	itrForGitHub, err := ghinstallation.New(http.DefaultTransport, config.Apps.GitHub.AppID, config.Apps.GitHub.InstallationID, privateKey)
+	itrForGitHub, err := ghinstallation.New(http.DefaultTransport, config.Apps.GitHub.AppID, config.Apps.GitHub.InstallationID, githubPrivateKey)
 	if err != nil {
 		logger.Fatalf("Failed creating installation authentication: %v", err)
 	}
@@ -101,7 +101,7 @@ func main() {
 	manager.Serve()
 }
 
-func initConfig() (*types.Config, []byte) {
+func initConfig() (*types.Config, []byte, []byte) {
 	var bytes []byte
 	var err error
 	logrus.Info("Loading configuration")
@@ -136,13 +136,22 @@ func initConfig() (*types.Config, []byte) {
 	}
 	logrus.Info("Configuration validated")
 
-	logrus.Info("Decoding private key")
-	privateKey, err := base64.StdEncoding.DecodeString(config.Apps.GitHub.PrivateKey)
+	logrus.Info("Decoding GitHub private key")
+	githubPrivateKey, err := base64.StdEncoding.DecodeString(config.Apps.GitHub.PrivateKey)
 	if err != nil {
 		logrus.Fatalf("Unable to decode private key from base64: %v", err)
 	}
-	logrus.Info("Private key decoded")
-	return config, privateKey
+	logrus.Info("GitHub Private key decoded")
+
+	logrus.Info("Decoding Client private key")
+
+	clientPrivateKey, err := base64.StdEncoding.DecodeString(config.Apps.Client.PrivateKey)
+	if err != nil {
+		logrus.Fatalf("Unable to decode private key from base64: %v", err)
+	}
+	logrus.Info("GitHub Client key decoded")
+
+	return config, githubPrivateKey, clientPrivateKey
 }
 
 func initLogger(config *types.Config) *logrus.Logger {
