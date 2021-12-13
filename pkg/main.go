@@ -16,13 +16,12 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/lindluni/github-issue-sync/pkg/db"
-
 	"github.com/bradleyfalzon/ghinstallation/v2"
 	"github.com/gin-contrib/requestid"
 	"github.com/gin-gonic/gin"
 	"github.com/google/go-github/v41/github"
 	"github.com/google/uuid"
+	"github.com/lindluni/github-issue-sync/pkg/db"
 	"github.com/lindluni/github-issue-sync/pkg/server"
 	"github.com/lindluni/github-issue-sync/pkg/types"
 	"github.com/shurcooL/githubv4"

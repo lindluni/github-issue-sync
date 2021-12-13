@@ -89,14 +89,12 @@ func (m *Manager) DoWebHookEMU(c *gin.Context) {
 	case "issues":
 		webhook, err := parseWebHook(c)
 		if err != nil {
-			fmt.Println(err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		if webhook.Issue.User.GetLogin() != m.Config.Apps.BotName {
+		if !m.isBotIssue(webhook) {
 			err = m.handleEMUIssue(webhook)
 			if err != nil {
-				fmt.Println(err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
@@ -104,14 +102,12 @@ func (m *Manager) DoWebHookEMU(c *gin.Context) {
 	case "issue_comment":
 		webhook, err := parseWebHook(c)
 		if err != nil {
-			fmt.Println(err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		if webhook.Comment.User.GetLogin() != m.Config.Apps.BotName {
+		if !m.isBotComment(webhook) {
 			err = m.handleEMUIssueComment(webhook)
 			if err != nil {
-				fmt.Println(err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
@@ -128,36 +124,38 @@ func (m *Manager) DoWebHookGitHub(c *gin.Context) {
 	switch event {
 	case "issues":
 		webhook, err := parseWebHook(c)
-		if webhook.Issue.User.GetLogin() != m.Config.Apps.BotName {
+		if !m.isBotIssue(webhook) {
 			err = m.handleGitHubIssue(webhook)
 			if err != nil {
-				fmt.Println(err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 		}
-		fmt.Println("Handled issue event")
-		break
 	case "issue_comment":
 		webhook, err := parseWebHook(c)
 		if err != nil {
-			fmt.Println(err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		if webhook.Issue.User.GetLogin() != m.Config.Apps.BotName {
+		if !m.isBotComment(webhook) {
 			err = m.handleGitHubIssueComment(webhook)
 			if err != nil {
-				fmt.Println(err)
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
 		}
-		break
 	default:
 		fmt.Printf("Unsupported event: %s\n", event)
 		c.JSON(http.StatusOK, gin.H{"Error": "Unsupported event"})
 	}
+}
+
+func (m *Manager) isBotComment(webhook *types.WebHook) bool {
+	return webhook.Comment.User.GetLogin() != m.Config.Apps.EMUBotName && webhook.Comment.User.GetLogin() != m.Config.Apps.ClientBotName
+}
+
+func (m *Manager) isBotIssue(webhook *types.WebHook) bool {
+	return webhook.Issue.User.GetLogin() != m.Config.Apps.EMUBotName && webhook.Issue.User.GetLogin() != m.Config.Apps.ClientBotName
 }
 
 func parseWebHook(c *gin.Context) (*types.WebHook, error) {
@@ -275,7 +273,7 @@ func (m *Manager) deleteEMUIssue(webhook *types.WebHook) error {
 			Repository struct {
 				ID string
 			}
-		} `graphql:"deleteEMUIssue(input: $input)"`
+		} `graphql:"deleteIssue(input: $input)"`
 	}
 
 	issue, _, err := m.GitHubClient.Issues.Get(context.Background(), m.Config.Repo.Org, m.Config.Repo.Name, githubIssueNumber)
@@ -445,11 +443,11 @@ func (m *Manager) updateGitHubIssueState(webhook *types.WebHook) error {
 func (m *Manager) handleGitHubIssueComment(webhook *types.WebHook) error {
 	switch webhook.Action {
 	case "created":
-		id, err := m.createGitHubComment(webhook)
+		emuIssueID, emuCommentID, err := m.createGitHubComment(webhook)
 		if err != nil {
 			return err
 		}
-		err = m.DBClient.InsertCommentEntry(webhook, id)
+		err = m.DBClient.InsertGitHubCommentEntry(webhook, emuIssueID, emuCommentID)
 		if err != nil {
 			return err
 		}
@@ -475,10 +473,10 @@ func (m *Manager) handleGitHubIssueComment(webhook *types.WebHook) error {
 	return nil
 }
 
-func (m *Manager) createGitHubComment(webhook *types.WebHook) (int64, error) {
-	emuOrg, emuRepo, emuIssueNumber, err := m.DBClient.GetEMUIssueIDFromGitHubCommentEntry(webhook)
+func (m *Manager) createGitHubComment(webhook *types.WebHook) (int64, int64, error) {
+	emuIssueID, emuOrg, emuRepo, emuIssueNumber, err := m.DBClient.GetEMUIssueIDFromGitHubCommentEntry(webhook)
 	if err != nil {
-		return -1, err
+		return -1, -1, err
 	}
 	author := webhook.Comment.User.GetLogin()
 	body := webhook.Comment.GetBody()
@@ -486,27 +484,31 @@ func (m *Manager) createGitHubComment(webhook *types.WebHook) (int64, error) {
 	newBody := fmt.Sprintf("@%s posted:\n\n%s", author, body)
 	client, err := m.retrieveInstallationClient(emuOrg)
 	if err != nil {
-		return -1, err
+		return -1, -1, err
 	}
 	comment, _, err := client.Issues.CreateComment(context.Background(), emuOrg, emuRepo, emuIssueNumber, &github.IssueComment{
 		Body: &newBody,
 	})
 	if err != nil {
-		return -1, err
+		return -1, -1, err
 	}
-	return comment.GetID(), nil
+	return emuIssueID, comment.GetID(), nil
 }
 
 func (m *Manager) editGitHubComment(webhook *types.WebHook) error {
-	githubIssueNumber, err := m.DBClient.GetGitHubCommentIDEntry(webhook)
+	emuOrg, emuRepo, emuIssueNumber, err := m.DBClient.GetEMUCommentIDEntry(webhook)
 	if err != nil {
 		return err
 	}
 	author := webhook.Comment.User.GetLogin()
 	body := webhook.Comment.GetBody()
-
 	newBody := fmt.Sprintf("@%s posted:\n\n%s", author, body)
-	_, _, err = m.GitHubClient.Issues.EditComment(context.Background(), m.Config.Repo.Org, m.Config.Repo.Name, int64(githubIssueNumber), &github.IssueComment{
+
+	client, err := m.retrieveInstallationClient(emuOrg)
+	if err != nil {
+		return err
+	}
+	_, _, err = client.Issues.EditComment(context.Background(), emuOrg, emuRepo, emuIssueNumber, &github.IssueComment{
 		Body: &newBody,
 	})
 	if err != nil {
@@ -516,12 +518,16 @@ func (m *Manager) editGitHubComment(webhook *types.WebHook) error {
 }
 
 func (m *Manager) deleteGitHubComment(webhook *types.WebHook) error {
-	githubIssueNumber, err := m.DBClient.GetGitHubCommentIDEntry(webhook)
+	emuOrg, emuRepo, emuIssueNumber, err := m.DBClient.GetEMUCommentIDEntry(webhook)
 	if err != nil {
 		return err
 	}
 
-	_, err = m.GitHubClient.Issues.DeleteComment(context.Background(), m.Config.Repo.Org, m.Config.Repo.Name, int64(githubIssueNumber))
+	client, err := m.retrieveInstallationClient(emuOrg)
+	if err != nil {
+		return err
+	}
+	_, err = client.Issues.DeleteComment(context.Background(), emuOrg, emuRepo, emuIssueNumber)
 	if err != nil {
 		return err
 	}
@@ -550,7 +556,6 @@ func (m *Manager) createInstallationClient(org string) (*github.Client, error) {
 			return nil, err
 		}
 		for _, installation := range installations {
-			fmt.Printf("Found installation: %d\n", installation.GetID())
 			if installation.GetAccount().GetLogin() == org && installation.GetID() != 21250525 {
 				client, err := m.createNewInstallationClient(installation.GetID())
 				if err != nil {

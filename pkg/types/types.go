@@ -10,9 +10,10 @@ type Config struct {
 }
 
 type Apps struct {
-	BotName string `yaml:"botName"`
-	GitHub  App    `yaml:"github"`
-	Client  App    `yaml:"client"`
+	ClientBotName string `yaml:"clientBotName"`
+	EMUBotName    string `yaml:"emuBotName"`
+	GitHub        App    `yaml:"github"`
+	Client        App    `yaml:"client"`
 }
 
 type App struct {

@@ -25,15 +25,11 @@ func (m *Manager) InitDB() error {
 	if err != nil {
 		return err
 	}
-	_, err = m.Client.Exec("CREATE TABLE IF NOT EXISTS issue_sync.synced_comments (id int NOT NULL, issue_id int NOT NULL, synced_comment_id int, login VARCHAR(255), body TEXT, PRIMARY KEY (id), FOREIGN KEY (issue_id) REFERENCES issue_sync.issues(id) ON DELETE CASCADE)")
-	if err != nil {
-		return err
-	}
+
 	return nil
 }
 
 func (m *Manager) InsertIssueEntry(webhook *types.WebHook, syncedIssueNumber int) error {
-	fmt.Println(webhook.Issue.GetID())
 	_, err := m.Client.Exec("INSERT INTO issue_sync.issues (id, login, title, body, org, repo, issue_number, state, synced_issue_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", webhook.Issue.GetID(), webhook.Issue.User.GetLogin(), webhook.Issue.GetTitle(), webhook.Issue.GetBody(), webhook.Repository.Owner.GetLogin(), webhook.Repository.GetName(), webhook.Issue.GetNumber(), webhook.Issue.GetState(), syncedIssueNumber)
 	if err != nil {
 		return err
@@ -42,8 +38,15 @@ func (m *Manager) InsertIssueEntry(webhook *types.WebHook, syncedIssueNumber int
 }
 
 func (m *Manager) InsertCommentEntry(webhook *types.WebHook, syncedCommentID int64) error {
-	fmt.Println(webhook.Issue.GetID())
 	_, err := m.Client.Exec("INSERT INTO issue_sync.comments (id, issue_id, login, body, synced_comment_id) VALUES (?, ?, ?, ?, ?)", webhook.Comment.GetID(), webhook.Issue.GetID(), webhook.Comment.User.GetLogin(), webhook.Comment.GetBody(), syncedCommentID)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) InsertGitHubCommentEntry(webhook *types.WebHook, emuIssueId, syncedCommentID int64) error {
+	_, err := m.Client.Exec("INSERT INTO issue_sync.comments (id, issue_id, login, body, synced_comment_id) VALUES (?, ?, ?, ?, ?)", webhook.Comment.GetID(), emuIssueId, webhook.Comment.User.GetLogin(), webhook.Comment.GetBody(), syncedCommentID)
 	if err != nil {
 		return err
 	}
@@ -66,14 +69,6 @@ func (m *Manager) UpdateCommentEntry(webhook *types.WebHook) error {
 	return nil
 }
 
-func (m *Manager) UpdateSyncedCommentEntry(webhook *types.WebHook) error {
-	_, err := m.Client.Exec("UPDATE issue_sync.synced_comments SET login = ?, body = ? WHERE id = ?", webhook.Comment.User.GetLogin(), webhook.Comment.GetBody(), webhook.Comment.GetID())
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
 func (m *Manager) DeleteIssueEntry(webhook *types.WebHook) error {
 	_, err := m.Client.Exec("DELETE FROM issue_sync.issues WHERE id = ?", webhook.Issue.GetID())
 	if err != nil {
@@ -90,30 +85,22 @@ func (m *Manager) DeleteCommentEntry(webhook *types.WebHook) error {
 	return nil
 }
 
-func (m *Manager) DeleteSyncedCommentEntry(webhook *types.WebHook) error {
-	fmt.Println(webhook.Comment.GetID())
-	_, err := m.Client.Exec("DELETE FROM issue_sync.synced_comments WHERE id = ?", webhook.Comment.GetID())
+func (m *Manager) GetEMUIssueIDFromGitHubCommentEntry(webhook *types.WebHook) (int64, string, string, int, error) {
+	rows, err := m.Client.Query("SELECT issue_sync.issues.id, issue_sync.issues.org, issue_sync.issues.repo, issue_sync.issues.issue_number FROM issue_sync.issues WHERE synced_issue_number = ? LIMIT 1", webhook.Issue.GetNumber())
 	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func (m *Manager) GetEMUIssueIDFromGitHubCommentEntry(webhook *types.WebHook) (string, string, int, error) {
-	rows, err := m.Client.Query("SELECT issues.org, issues.repo, issues.issue_number FROM issue_sync.issues WHERE synced_issue_number = ? LIMIT 1", webhook.Issue.GetNumber())
-	if err != nil {
-		return "", "", -1, err
+		return -1, "", "", -1, err
 	}
 	var org, repo string
+	var id int64
 	var issueNumber int
 	if rows.Next() {
-		err = rows.Scan(&org, &repo, &issueNumber)
+		err = rows.Scan(&id, &org, &repo, &issueNumber)
 		if err != nil {
-			return "", "", -1, err
+			return -1, "", "", -1, err
 		}
-		return org, repo, issueNumber, nil
+		return id, org, repo, issueNumber, nil
 	}
-	return "", "", -1, fmt.Errorf("unable to locate parent issues")
+	return -1, "", "", -1, fmt.Errorf("unable to locate parent issues")
 }
 
 func (m *Manager) GetGitHubIssueIDEntry(webhook *types.WebHook) (int, error) {
@@ -148,10 +135,21 @@ func (m *Manager) GetGitHubCommentIDEntry(webhook *types.WebHook) (int, error) {
 	return -1, fmt.Errorf("unable to locate comment id")
 }
 
-type EMUIssue struct {
-	org         string
-	repo        string
-	issueNumber int64
+func (m *Manager) GetEMUCommentIDEntry(webhook *types.WebHook) (string, string, int64, error) {
+	rows, err := m.Client.Query("SELECT issue_sync.issues.org, issue_sync.issues.repo, issue_sync.comments.synced_comment_id FROM issue_sync.issues, issue_sync.comments WHERE issue_sync.issues.id = issue_sync.comments.issue_id AND issue_sync.comments.id = ? LIMIT 1", webhook.Comment.GetID())
+	if err != nil {
+		return "", "", -1, err
+	}
+	var org, repo string
+	var id int64
+	if rows.Next() {
+		err = rows.Scan(&org, &repo, &id)
+		if err != nil {
+			return "", "", -1, err
+		}
+		return org, repo, id, nil
+	}
+	return "", "", -1, fmt.Errorf("unable to locate comment id")
 }
 
 func (m *Manager) GetEMUIssue(webhook *types.WebHook) (string, string, int, error) {
