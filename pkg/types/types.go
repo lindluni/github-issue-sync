@@ -56,5 +56,6 @@ type WebHook struct {
 	Comment    *github.IssueComment `json:"comment"`
 	Issue      *github.Issue        `json:"issue"`
 	Repository *github.Repository   `json:"repository"`
-	Change     *github.EditChange   `json:"change"`
+	Changes    *github.EditChange   `json:"changes"`
+	Sender     *github.User         `json:"sender"`
 }

@@ -1,6 +1,7 @@
 // TODO: Decide which edits should be allowed, and which should be reverted.
-// TODO: If we delete issue, recreate it.
-// TODO: Only allow repo who created comment/issue to delete it, else, recreate it.
+// TODO: If we delete issue, recreate it (this is complicated, as it requires us to remap the issue/comment numbers and id's )
+// TODO: If issue/comment is deleted, and we cannot find it, comment back that the other person has deleted the item
+//       and please open a new issue.
 package main
 
 import (
