@@ -2,6 +2,7 @@ package server
 
 // TODO: Verify EMU repo is a known repo from config updated via Actions rollout
 // TODO: Return response objects on all paths
+// TODO: Add requestID's to logging paths
 
 import (
 	"context"
@@ -26,6 +27,9 @@ type Manager struct {
 	DBClient      *db.Manager
 	GitHubClient  *github.Client
 	GraphQLClient *githubv4.Client
+
+	EMUHandler    *handlers.EMU
+	GitHubHandler *handlers.GitHub
 
 	Router *gin.Engine
 	Server *http.Server
@@ -82,7 +86,6 @@ func (m *Manager) SetRoutes() {
 
 func (m *Manager) DoWebHookEMU(c *gin.Context) {
 	event := c.GetHeader("X-GitHub-Event")
-	emu := handlers.EMU{}
 	switch event {
 	case "issues":
 		webhook, err := parseWebHook(c)
@@ -91,7 +94,7 @@ func (m *Manager) DoWebHookEMU(c *gin.Context) {
 			return
 		}
 		if !m.isBotIssue(webhook) {
-			err = emu.HandleIssue(webhook, m.DBClient, m.GitHubClient, m.GraphQLClient, m.Config)
+			err = m.EMUHandler.HandleIssue(webhook)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -104,7 +107,7 @@ func (m *Manager) DoWebHookEMU(c *gin.Context) {
 			return
 		}
 		if !m.isBotComment(webhook) {
-			err = emu.HandleIssueComment(webhook, m.DBClient, m.GitHubClient, m.Config)
+			err = m.EMUHandler.HandleIssueComment(webhook)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -119,12 +122,11 @@ func (m *Manager) DoWebHookEMU(c *gin.Context) {
 
 func (m *Manager) DoWebHookGitHub(c *gin.Context) {
 	event := c.GetHeader("X-GitHub-Event")
-	gh := handlers.GitHub{}
 	switch event {
 	case "issues":
 		webhook, err := parseWebHook(c)
 		if !m.isBotIssue(webhook) || (webhook.Action == "edited" && !m.isBotSender(webhook)) {
-			err = gh.HandleIssue(webhook, m.Client, m.DBClient, m.GitHubClient, m.Config)
+			err = m.GitHubHandler.HandleIssue(webhook)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
@@ -137,7 +139,7 @@ func (m *Manager) DoWebHookGitHub(c *gin.Context) {
 			return
 		}
 		if !m.isBotComment(webhook) {
-			err = gh.HandleIssueComment(webhook, m.Client, m.DBClient, m.Config)
+			err = m.GitHubHandler.HandleIssueComment(webhook)
 			if err != nil {
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return

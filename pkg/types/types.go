@@ -52,10 +52,11 @@ type Repo struct {
 }
 
 type WebHook struct {
-	Action     string               `json:"action"`
-	Comment    *github.IssueComment `json:"comment"`
-	Issue      *github.Issue        `json:"issue"`
-	Repository *github.Repository   `json:"repository"`
-	Changes    *github.EditChange   `json:"changes"`
-	Sender     *github.User         `json:"sender"`
+	Action       string               `json:"action"`
+	Comment      *github.IssueComment `json:"comment"`
+	Issue        *github.Issue        `json:"issue"`
+	Repository   *github.Repository   `json:"repository"`
+	Changes      *github.EditChange   `json:"changes"`
+	Sender       *github.User         `json:"sender"`
+	Installation *github.Installation `json:"installation"`
 }

@@ -2,6 +2,7 @@
 // TODO: If we delete issue, recreate it (this is complicated, as it requires us to remap the issue/comment numbers and id's )
 // TODO: If issue/comment is deleted, and we cannot find it, comment back that the other person has deleted the item
 //       and please open a new issue.
+// TODO: Add loggers/clients to handlers
 package main
 
 import (
@@ -23,6 +24,7 @@ import (
 	"github.com/google/go-github/v41/github"
 	"github.com/google/uuid"
 	"github.com/lindluni/github-issue-sync/pkg/db"
+	"github.com/lindluni/github-issue-sync/pkg/handlers"
 	"github.com/lindluni/github-issue-sync/pkg/server"
 	"github.com/lindluni/github-issue-sync/pkg/types"
 	"github.com/shurcooL/githubv4"
@@ -73,10 +75,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// See "Important settings" section.
 	dbClient.SetConnMaxLifetime(time.Minute * 3)
 	dbClient.SetMaxOpenConns(10)
 	dbClient.SetMaxIdleConns(10)
+
+	dbManager := &db.Manager{
+		Client: dbClient,
+	}
 
 	manager := &server.Manager{
 		Logger: logger,
@@ -86,12 +91,26 @@ func main() {
 			Addr:    net.JoinHostPort(config.Server.Address, strconv.Itoa(config.Server.Port)),
 			Handler: router,
 		},
-		Client: client,
-		DBClient: &db.Manager{
-			Client: dbClient,
-		},
+		Client:        client,
+		DBClient:      dbManager,
 		GitHubClient:  gitHubClient,
 		GraphQLClient: graphQLClient,
+		EMUHandler: &handlers.EMU{
+			Client:        client,
+			DBClient:      dbManager,
+			GitHubClient:  gitHubClient,
+			GraphQLClient: graphQLClient,
+			Config:        config,
+			Logger:        logger,
+		},
+		GitHubHandler: &handlers.GitHub{
+			Client:        client,
+			DBClient:      dbManager,
+			GitHubClient:  gitHubClient,
+			GraphQLClient: graphQLClient,
+			Config:        config,
+			Logger:        logger,
+		},
 	}
 
 	err = manager.DBClient.InitDB()
@@ -155,6 +174,7 @@ func initConfig() (*types.Config, []byte, []byte) {
 }
 
 func initLogger(config *types.Config) *logrus.Logger {
+	gin.SetMode(gin.ReleaseMode)
 	logger := logrus.New()
 	level, err := logrus.ParseLevel(config.Logging.Level)
 	if err != nil {

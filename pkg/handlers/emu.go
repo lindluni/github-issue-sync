@@ -8,54 +8,64 @@ import (
 	"github.com/lindluni/github-issue-sync/pkg/db"
 	"github.com/lindluni/github-issue-sync/pkg/types"
 	"github.com/shurcooL/githubv4"
+	"github.com/sirupsen/logrus"
 )
 
-type EMU struct{}
+type EMU struct {
+	Client        *github.Client
+	DBClient      *db.Manager
+	GitHubClient  *github.Client
+	GraphQLClient *githubv4.Client
 
-func (e *EMU) HandleIssue(webhook *types.WebHook, dbClient *db.Manager, githubClient *github.Client, graphQLClient *githubv4.Client, config *types.Config) error {
+	Config *types.Config
+
+	Logger *logrus.Logger
+}
+
+func (e *EMU) HandleIssue(webhook *types.WebHook) error {
 	switch webhook.Action {
 	case "opened":
-		issue, err := e.openIssue(webhook, githubClient, config)
+		issue, err := e.openIssue(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.InsertIssueEntry(webhook, issue.GetNumber())
+		err = e.DBClient.InsertIssueEntry(webhook, issue.GetNumber())
 		if err != nil {
 			return err
 		}
 	case "edited":
-		err := e.editIssue(webhook, dbClient, githubClient, config)
+		err := e.editIssue(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.UpdateIssueEntry(webhook)
+		err = e.DBClient.UpdateIssueEntry(webhook)
 		if err != nil {
 			return err
 		}
 	case "deleted":
-		err := e.deleteIssue(webhook, dbClient, githubClient, graphQLClient, config)
+		err := e.deleteIssue(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.DeleteIssueEntry(webhook)
+		err = e.DBClient.DeleteIssueEntry(webhook)
 		if err != nil {
 			return err
 		}
 	case "closed":
-		err := e.updateIssueState(webhook, dbClient, githubClient, config)
+		err := e.updateIssueState(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.UpdateIssueEntry(webhook)
+		err = e.DBClient.UpdateIssueEntry(webhook)
 		if err != nil {
 			return err
 		}
 	case "reopened":
-		err := e.updateIssueState(webhook, dbClient, githubClient, config)
+		err := e.updateIssueState(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.UpdateIssueEntry(webhook)
+		err = e.DBClient.UpdateIssueEntry(webhook)
 		if err != nil {
 			return err
 		}
@@ -64,7 +74,7 @@ func (e *EMU) HandleIssue(webhook *types.WebHook, dbClient *db.Manager, githubCl
 	return nil
 }
 
-func (e *EMU) openIssue(webhook *types.WebHook, client *github.Client, config *types.Config) (*github.Issue, error) {
+func (e *EMU) openIssue(webhook *types.WebHook) (*github.Issue, error) {
 	org := webhook.Repository.Owner.GetLogin()
 	repo := webhook.Repository.GetName()
 	issueNumber := webhook.Issue.GetNumber()
@@ -75,7 +85,7 @@ func (e *EMU) openIssue(webhook *types.WebHook, client *github.Client, config *t
 	newTitle := fmt.Sprintf("%s/%s#%d: %s", org, repo, issueNumber, title)
 	newBody := fmt.Sprintf("@%s posted:\n\n%s", author, body)
 
-	issue, _, err := client.Issues.Create(context.Background(), config.Repo.Org, config.Repo.Name, &github.IssueRequest{
+	issue, _, err := e.GitHubClient.Issues.Create(context.Background(), e.Config.Repo.Org, e.Config.Repo.Name, &github.IssueRequest{
 		Title: &newTitle,
 		Body:  &newBody,
 	})
@@ -83,7 +93,7 @@ func (e *EMU) openIssue(webhook *types.WebHook, client *github.Client, config *t
 	return issue, err
 }
 
-func (e *EMU) editIssue(webhook *types.WebHook, dbClient *db.Manager, githubClient *github.Client, config *types.Config) error {
+func (e *EMU) editIssue(webhook *types.WebHook) error {
 	org := webhook.Repository.Owner.GetLogin()
 	repo := webhook.Repository.GetName()
 	issueNumber := webhook.Issue.GetNumber()
@@ -91,7 +101,7 @@ func (e *EMU) editIssue(webhook *types.WebHook, dbClient *db.Manager, githubClie
 	author := webhook.Issue.User.GetLogin()
 	body := webhook.Issue.GetBody()
 
-	githubIssueNumber, err := dbClient.GetGitHubIssueIDEntry(webhook)
+	githubIssueNumber, err := e.DBClient.GetGitHubIssueIDEntry(webhook)
 	if err != nil {
 		return err
 	}
@@ -99,7 +109,7 @@ func (e *EMU) editIssue(webhook *types.WebHook, dbClient *db.Manager, githubClie
 	newTitle := fmt.Sprintf("%s/%s#%d: %s", org, repo, issueNumber, title)
 	newBody := fmt.Sprintf("@%s posted:\n\n%s", author, body)
 
-	_, _, err = githubClient.Issues.Edit(context.Background(), config.Repo.Org, config.Repo.Name, githubIssueNumber, &github.IssueRequest{
+	_, _, err = e.GitHubClient.Issues.Edit(context.Background(), e.Config.Repo.Org, e.Config.Repo.Name, githubIssueNumber, &github.IssueRequest{
 		Title: &newTitle,
 		Body:  &newBody,
 	})
@@ -107,8 +117,8 @@ func (e *EMU) editIssue(webhook *types.WebHook, dbClient *db.Manager, githubClie
 	return err
 }
 
-func (e *EMU) deleteIssue(webhook *types.WebHook, dbClient *db.Manager, githubClient *github.Client, graphQLClient *githubv4.Client, config *types.Config) error {
-	githubIssueNumber, err := dbClient.GetGitHubIssueIDEntry(webhook)
+func (e *EMU) deleteIssue(webhook *types.WebHook) error {
+	githubIssueNumber, err := e.DBClient.GetGitHubIssueIDEntry(webhook)
 	if err != nil {
 		return err
 	}
@@ -121,14 +131,14 @@ func (e *EMU) deleteIssue(webhook *types.WebHook, dbClient *db.Manager, githubCl
 		} `graphql:"deleteIssue(input: $input)"`
 	}
 
-	issue, _, err := githubClient.Issues.Get(context.Background(), config.Repo.Org, config.Repo.Name, githubIssueNumber)
+	issue, _, err := e.GitHubClient.Issues.Get(context.Background(), e.Config.Repo.Org, e.Config.Repo.Name, githubIssueNumber)
 	if err != nil {
 		return err
 	}
 	input := githubv4.DeleteIssueInput{
 		IssueID: issue.GetNodeID(),
 	}
-	err = graphQLClient.Mutate(context.Background(), &mutation, input, nil)
+	err = e.GraphQLClient.Mutate(context.Background(), &mutation, input, nil)
 	if err != nil {
 		return err
 	}
@@ -136,44 +146,44 @@ func (e *EMU) deleteIssue(webhook *types.WebHook, dbClient *db.Manager, githubCl
 	return nil
 }
 
-func (e *EMU) updateIssueState(webhook *types.WebHook, dbClient *db.Manager, githubClient *github.Client, config *types.Config) error {
-	githubIssueNumber, err := dbClient.GetGitHubIssueIDEntry(webhook)
+func (e *EMU) updateIssueState(webhook *types.WebHook) error {
+	githubIssueNumber, err := e.DBClient.GetGitHubIssueIDEntry(webhook)
 	if err != nil {
 		return err
 	}
-	_, _, err = githubClient.Issues.Edit(context.Background(), config.Repo.Org, config.Repo.Name, githubIssueNumber, &github.IssueRequest{
+	_, _, err = e.GitHubClient.Issues.Edit(context.Background(), e.Config.Repo.Org, e.Config.Repo.Name, githubIssueNumber, &github.IssueRequest{
 		State: webhook.Issue.State,
 	})
 
 	return err
 }
 
-func (e *EMU) HandleIssueComment(webhook *types.WebHook, dbClient *db.Manager, githubClient *github.Client, config *types.Config) error {
+func (e *EMU) HandleIssueComment(webhook *types.WebHook) error {
 	switch webhook.Action {
 	case "created":
-		id, err := e.createComment(webhook, dbClient, githubClient, config)
+		id, err := e.createComment(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.InsertCommentEntry(webhook, id)
+		err = e.DBClient.InsertCommentEntry(webhook, id)
 		if err != nil {
 			return err
 		}
 	case "edited":
-		err := e.editComment(webhook, dbClient, githubClient, config)
+		err := e.editComment(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.UpdateCommentEntry(webhook)
+		err = e.DBClient.UpdateCommentEntry(webhook)
 		if err != nil {
 			return err
 		}
 	case "deleted":
-		err := e.deleteComment(webhook, dbClient, githubClient, config)
+		err := e.deleteComment(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.DeleteCommentEntry(webhook)
+		err = e.DBClient.DeleteCommentEntry(webhook)
 		if err != nil {
 			return err
 		}
@@ -181,8 +191,8 @@ func (e *EMU) HandleIssueComment(webhook *types.WebHook, dbClient *db.Manager, g
 	return nil
 }
 
-func (e *EMU) createComment(webhook *types.WebHook, dbClient *db.Manager, githubClient *github.Client, config *types.Config) (int64, error) {
-	githubIssueNumber, err := dbClient.GetGitHubIssueIDEntry(webhook)
+func (e *EMU) createComment(webhook *types.WebHook) (int64, error) {
+	githubIssueNumber, err := e.DBClient.GetGitHubIssueIDEntry(webhook)
 	if err != nil {
 		return -1, err
 	}
@@ -191,7 +201,7 @@ func (e *EMU) createComment(webhook *types.WebHook, dbClient *db.Manager, github
 
 	newBody := fmt.Sprintf("@%s posted:\n\n%s", author, body)
 
-	comment, _, err := githubClient.Issues.CreateComment(context.Background(), config.Repo.Org, config.Repo.Name, githubIssueNumber, &github.IssueComment{
+	comment, _, err := e.GitHubClient.Issues.CreateComment(context.Background(), e.Config.Repo.Org, e.Config.Repo.Name, githubIssueNumber, &github.IssueComment{
 		Body: &newBody,
 	})
 	if err != nil {
@@ -200,8 +210,8 @@ func (e *EMU) createComment(webhook *types.WebHook, dbClient *db.Manager, github
 	return comment.GetID(), nil
 }
 
-func (e *EMU) editComment(webhook *types.WebHook, dbClient *db.Manager, githubClient *github.Client, config *types.Config) error {
-	githubIssueNumber, err := dbClient.GetGitHubCommentIDEntry(webhook)
+func (e *EMU) editComment(webhook *types.WebHook) error {
+	githubIssueNumber, err := e.DBClient.GetGitHubCommentIDEntry(webhook)
 	if err != nil {
 		return err
 	}
@@ -209,7 +219,7 @@ func (e *EMU) editComment(webhook *types.WebHook, dbClient *db.Manager, githubCl
 	body := webhook.Comment.GetBody()
 
 	newBody := fmt.Sprintf("@%s posted:\n\n%s", author, body)
-	_, _, err = githubClient.Issues.EditComment(context.Background(), config.Repo.Org, config.Repo.Name, int64(githubIssueNumber), &github.IssueComment{
+	_, _, err = e.GitHubClient.Issues.EditComment(context.Background(), e.Config.Repo.Org, e.Config.Repo.Name, int64(githubIssueNumber), &github.IssueComment{
 		Body: &newBody,
 	})
 	if err != nil {
@@ -218,13 +228,13 @@ func (e *EMU) editComment(webhook *types.WebHook, dbClient *db.Manager, githubCl
 	return nil
 }
 
-func (e *EMU) deleteComment(webhook *types.WebHook, dbClient *db.Manager, githubClient *github.Client, config *types.Config) error {
-	githubIssueNumber, err := dbClient.GetGitHubCommentIDEntry(webhook)
+func (e *EMU) deleteComment(webhook *types.WebHook) error {
+	githubIssueNumber, err := e.DBClient.GetGitHubCommentIDEntry(webhook)
 	if err != nil {
 		return err
 	}
 
-	_, err = githubClient.Issues.DeleteComment(context.Background(), config.Repo.Org, config.Repo.Name, int64(githubIssueNumber))
+	_, err = e.GitHubClient.Issues.DeleteComment(context.Background(), e.Config.Repo.Org, e.Config.Repo.Name, int64(githubIssueNumber))
 	if err != nil {
 		return err
 	}

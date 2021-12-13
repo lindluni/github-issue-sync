@@ -10,34 +10,45 @@ import (
 	"github.com/google/go-github/v41/github"
 	"github.com/lindluni/github-issue-sync/pkg/db"
 	"github.com/lindluni/github-issue-sync/pkg/types"
+	"github.com/shurcooL/githubv4"
+	"github.com/sirupsen/logrus"
 )
 
-type GitHub struct{}
+type GitHub struct {
+	Client        *github.Client
+	DBClient      *db.Manager
+	GitHubClient  *github.Client
+	GraphQLClient *githubv4.Client
+
+	Config *types.Config
+
+	Logger *logrus.Logger
+}
 
 var installationClients = make(map[string]*github.Client)
 
-func (g *GitHub) HandleIssue(webhook *types.WebHook, rawClient *github.Client, dbClient *db.Manager, githubClient *github.Client, config *types.Config) error {
+func (g *GitHub) HandleIssue(webhook *types.WebHook) error {
 	switch webhook.Action {
 	case "edited":
-		err := g.editIssue(webhook, githubClient, config)
+		err := g.editIssue(webhook)
 		if err != nil {
 			return err
 		}
 	case "closed":
-		err := g.updateIssueState(webhook, dbClient, rawClient, config)
+		err := g.updateIssueState(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.UpdateIssueEntry(webhook)
+		err = g.DBClient.UpdateIssueEntry(webhook)
 		if err != nil {
 			return err
 		}
 	case "reopened":
-		err := g.updateIssueState(webhook, dbClient, rawClient, config)
+		err := g.updateIssueState(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.UpdateIssueEntry(webhook)
+		err = g.DBClient.UpdateIssueEntry(webhook)
 		if err != nil {
 			return err
 		}
@@ -45,22 +56,22 @@ func (g *GitHub) HandleIssue(webhook *types.WebHook, rawClient *github.Client, d
 	return nil
 }
 
-func (g *GitHub) editIssue(webhook *types.WebHook, githubClient *github.Client, config *types.Config) error {
+func (g *GitHub) editIssue(webhook *types.WebHook) error {
 	if webhook.Changes.Title != nil && webhook.Changes.Body != nil {
-		_, _, err := githubClient.Issues.Edit(context.Background(), config.Repo.Org, config.Repo.Name, webhook.Issue.GetNumber(), &github.IssueRequest{
+		_, _, err := g.GitHubClient.Issues.Edit(context.Background(), g.Config.Repo.Org, g.Config.Repo.Name, webhook.Issue.GetNumber(), &github.IssueRequest{
 			Title: webhook.Changes.GetTitle().From,
 			Body:  webhook.Changes.GetBody().From,
 		})
 		return err
 	}
 	if webhook.Changes.Title != nil && webhook.Changes.Body == nil {
-		_, _, err := githubClient.Issues.Edit(context.Background(), config.Repo.Org, config.Repo.Name, webhook.Issue.GetNumber(), &github.IssueRequest{
+		_, _, err := g.GitHubClient.Issues.Edit(context.Background(), g.Config.Repo.Org, g.Config.Repo.Name, webhook.Issue.GetNumber(), &github.IssueRequest{
 			Title: webhook.Changes.GetTitle().From,
 		})
 		return err
 	}
 	if webhook.Changes.Title == nil && webhook.Changes.Body != nil {
-		_, _, err := githubClient.Issues.Edit(context.Background(), config.Repo.Org, config.Repo.Name, webhook.Issue.GetNumber(), &github.IssueRequest{
+		_, _, err := g.GitHubClient.Issues.Edit(context.Background(), g.Config.Repo.Org, g.Config.Repo.Name, webhook.Issue.GetNumber(), &github.IssueRequest{
 			Body: webhook.Changes.GetBody().From,
 		})
 		return err
@@ -68,12 +79,12 @@ func (g *GitHub) editIssue(webhook *types.WebHook, githubClient *github.Client, 
 	return fmt.Errorf("unable to evaluate issue edit")
 }
 
-func (g *GitHub) updateIssueState(webhook *types.WebHook, dbClient *db.Manager, rawClient *github.Client, config *types.Config) error {
-	org, repo, issueNumber, err := dbClient.GetEMUIssue(webhook)
+func (g *GitHub) updateIssueState(webhook *types.WebHook) error {
+	org, repo, issueNumber, err := g.DBClient.GetEMUIssue(webhook)
 	if err != nil {
 		return err
 	}
-	client, err := g.retrieveInstallationClient(org, rawClient, config)
+	client, err := g.retrieveInstallationClient(webhook.Installation.GetID())
 	if err != nil {
 		return err
 	}
@@ -83,32 +94,32 @@ func (g *GitHub) updateIssueState(webhook *types.WebHook, dbClient *db.Manager, 
 	return err
 }
 
-func (g *GitHub) HandleIssueComment(webhook *types.WebHook, rawClient *github.Client, dbClient *db.Manager, config *types.Config) error {
+func (g *GitHub) HandleIssueComment(webhook *types.WebHook) error {
 	switch webhook.Action {
 	case "created":
-		emuIssueID, emuCommentID, err := g.createComment(webhook, dbClient, rawClient, config)
+		emuIssueID, emuCommentID, err := g.createComment(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.InsertGitHubCommentEntry(webhook, emuIssueID, emuCommentID)
+		err = g.DBClient.InsertGitHubCommentEntry(webhook, emuIssueID, emuCommentID)
 		if err != nil {
 			return err
 		}
 	case "edited":
-		err := g.editComment(webhook, dbClient, rawClient, config)
+		err := g.editComment(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.UpdateCommentEntry(webhook)
+		err = g.DBClient.UpdateCommentEntry(webhook)
 		if err != nil {
 			return err
 		}
 	case "deleted":
-		err := g.deleteComment(webhook, dbClient, rawClient, config)
+		err := g.deleteComment(webhook)
 		if err != nil {
 			return err
 		}
-		err = dbClient.DeleteCommentEntry(webhook)
+		err = g.DBClient.DeleteCommentEntry(webhook)
 		if err != nil {
 			return err
 		}
@@ -116,8 +127,8 @@ func (g *GitHub) HandleIssueComment(webhook *types.WebHook, rawClient *github.Cl
 	return nil
 }
 
-func (g *GitHub) createComment(webhook *types.WebHook, dbClient *db.Manager, rawClient *github.Client, config *types.Config) (int64, int64, error) {
-	emuIssueID, emuOrg, emuRepo, emuIssueNumber, err := dbClient.GetEMUIssueIDFromGitHubCommentEntry(webhook)
+func (g *GitHub) createComment(webhook *types.WebHook) (int64, int64, error) {
+	emuIssueID, emuOrg, emuRepo, emuIssueNumber, err := g.DBClient.GetEMUIssueIDFromGitHubCommentEntry(webhook)
 	if err != nil {
 		return -1, -1, err
 	}
@@ -125,7 +136,7 @@ func (g *GitHub) createComment(webhook *types.WebHook, dbClient *db.Manager, raw
 	body := webhook.Comment.GetBody()
 
 	newBody := fmt.Sprintf("@%s posted:\n\n%s", author, body)
-	client, err := g.retrieveInstallationClient(emuOrg, rawClient, config)
+	client, err := g.retrieveInstallationClient(webhook.Installation.GetID())
 	if err != nil {
 		return -1, -1, err
 	}
@@ -138,8 +149,8 @@ func (g *GitHub) createComment(webhook *types.WebHook, dbClient *db.Manager, raw
 	return emuIssueID, comment.GetID(), nil
 }
 
-func (g *GitHub) editComment(webhook *types.WebHook, dbClient *db.Manager, rawClient *github.Client, config *types.Config) error {
-	emuOrg, emuRepo, emuIssueNumber, err := dbClient.GetEMUCommentIDEntry(webhook)
+func (g *GitHub) editComment(webhook *types.WebHook) error {
+	emuOrg, emuRepo, emuIssueNumber, err := g.DBClient.GetEMUCommentIDEntry(webhook)
 	if err != nil {
 		return err
 	}
@@ -147,7 +158,7 @@ func (g *GitHub) editComment(webhook *types.WebHook, dbClient *db.Manager, rawCl
 	body := webhook.Comment.GetBody()
 	newBody := fmt.Sprintf("@%s posted:\n\n%s", author, body)
 
-	client, err := g.retrieveInstallationClient(emuOrg, rawClient, config)
+	client, err := g.retrieveInstallationClient(webhook.Installation.GetID())
 	if err != nil {
 		return err
 	}
@@ -160,13 +171,13 @@ func (g *GitHub) editComment(webhook *types.WebHook, dbClient *db.Manager, rawCl
 	return nil
 }
 
-func (g *GitHub) deleteComment(webhook *types.WebHook, dbClient *db.Manager, rawClient *github.Client, config *types.Config) error {
-	emuOrg, emuRepo, emuIssueNumber, err := dbClient.GetEMUCommentIDEntry(webhook)
+func (g *GitHub) deleteComment(webhook *types.WebHook) error {
+	emuOrg, emuRepo, emuIssueNumber, err := g.DBClient.GetEMUCommentIDEntry(webhook)
 	if err != nil {
 		return err
 	}
 
-	client, err := g.retrieveInstallationClient(emuOrg, rawClient, config)
+	client, err := g.retrieveInstallationClient(webhook.Installation.GetID())
 	if err != nil {
 		return err
 	}
@@ -177,51 +188,12 @@ func (g *GitHub) deleteComment(webhook *types.WebHook, dbClient *db.Manager, raw
 	return nil
 }
 
-func (g *GitHub) retrieveInstallationClient(org string, rawClient *github.Client, config *types.Config) (*github.Client, error) {
-	if client, exists := installationClients[org]; exists {
-		return client, nil
-	}
-	client, err := g.createInstallationClient(org, rawClient, config)
+func (g *GitHub) retrieveInstallationClient(id int64) (*github.Client, error) {
+	privateKey, err := base64.StdEncoding.DecodeString(g.Config.Apps.Client.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
-	return client, nil
-}
-
-func (g *GitHub) createInstallationClient(org string, rawClient *github.Client, config *types.Config) (*github.Client, error) {
-	options := &github.ListOptions{
-		Page:    0,
-		PerPage: 100,
-	}
-	for {
-		installations, _, err := rawClient.Apps.ListInstallations(context.Background(), options)
-		if err != nil {
-			return nil, err
-		}
-		for _, installation := range installations {
-			if installation.GetAccount().GetLogin() == org && installation.GetID() != 21250525 {
-				client, err := g.createNewInstallationClient(installation.GetID(), config)
-				if err != nil {
-					return nil, err
-				}
-				installationClients[org] = client
-				return client, nil
-			}
-		}
-		if len(installations) < 100 {
-			break
-		}
-		options.Page++
-	}
-	return nil, fmt.Errorf("no installation found for %s", org)
-}
-
-func (g *GitHub) createNewInstallationClient(id int64, config *types.Config) (*github.Client, error) {
-	privateKey, err := base64.StdEncoding.DecodeString(config.Apps.Client.PrivateKey)
-	if err != nil {
-		return nil, err
-	}
-	itr, err := ghinstallation.New(http.DefaultTransport, config.Apps.Client.AppID, id, privateKey)
+	itr, err := ghinstallation.New(http.DefaultTransport, g.Config.Apps.Client.AppID, id, privateKey)
 	client := github.NewClient(&http.Client{Transport: itr})
 	return client, nil
 }
